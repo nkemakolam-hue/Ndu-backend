@@ -1,0 +1,12 @@
+{
+  "name": "ndu-backend",
+  "version": "1.0.0",
+  "description": "Ndu reporting API — zero-dependency Node.js starter backend",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

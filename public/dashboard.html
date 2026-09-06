@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ndu — Dashboard</title>
+<style>
+  body{font-family:sans-serif;background:#F4F7F1;color:#14231F;max-width:520px;margin:0 auto;padding:24px;}
+  h1{font-size:22px;}
+  a{color:#2F7D5B;}
+  .stat{display:flex;justify-content:space-between;font-size:14px;padding:8px 0;border-bottom:1px solid #DDE6D8;}
+  .bar-bg{height:8px;background:#E4EEDF;border-radius:4px;margin-top:4px;}
+  .bar-fill{height:100%;background:#2F7D5B;border-radius:4px;}
+  .row{margin-bottom:14px;}
+  #total{font-size:32px;font-weight:bold;margin:8px 0;}
+</style>
+</head>
+<body>
+  <p><a href="/">&larr; Ndu</a></p>
+  <h1>Dashboard</h1>
+  <p style="color:#3E524C;font-size:14px;">Live counts from the reporting API. <a href="/report.html">Submit a test report</a> to see it update.</p>
+
+  <div id="total">0</div>
+  <p style="color:#3E524C;font-size:13px;margin-top:-10px;">reports so far</p>
+
+  <h3>By category</h3>
+  <div id="byCategory"></div>
+
+  <h3>By status</h3>
+  <div id="byStatus"></div>
+
+  <script>
+    async function load() {
+      const res = await fetch('/api/stats');
+      const data = await res.json();
+      document.getElementById('total').textContent = data.total;
+
+      const maxCat = Math.max(1, ...Object.values(data.byCategory));
+      const catDiv = document.getElementById('byCategory');
+      catDiv.innerHTML = '';
+      for (const [cat, count] of Object.entries(data.byCategory)) {
+        const pct = Math.round((count / maxCat) * 100);
+        catDiv.innerHTML += `
+          <div class="row">
+            <div class="stat"><span>${cat}</span><span>${count}</span></div>
+            <div class="bar-bg"><div class="bar-fill" style="width:${pct}%"></div></div>
+          </div>`;
+      }
+
+      const statusDiv = document.getElementById('byStatus');
+      statusDiv.innerHTML = '';
+      for (const [status, count] of Object.entries(data.byStatus)) {
+        statusDiv.innerHTML += `<div class="stat"><span style="text-transform:capitalize">${status}</span><span>${count}</span></div>`;
+      }
+    }
+    load();
+  </script>
+</body>
+</html>

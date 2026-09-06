@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ndu — Report a problem</title>
+<style>
+  body{font-family:sans-serif;background:#F4F7F1;color:#14231F;max-width:480px;margin:0 auto;padding:24px;}
+  h1{font-size:22px;}
+  label{display:block;font-size:13px;color:#3E524C;margin:16px 0 6px;}
+  select,input,textarea{width:100%;padding:10px;border-radius:8px;border:1px solid #C9D6C1;font-size:15px;box-sizing:border-box;font-family:inherit;}
+  button{margin-top:20px;width:100%;padding:12px;border:none;border-radius:24px;background:#2F7D5B;color:#fff;font-size:15px;cursor:pointer;}
+  button:disabled{opacity:0.6;}
+  #msg{margin-top:14px;font-size:14px;}
+  #msg.ok{color:#2F7D5B;}
+  #msg.err{color:#A9502F;}
+  a{color:#2F7D5B;}
+</style>
+</head>
+<body>
+  <p><a href="/">&larr; Ndu</a></p>
+  <h1>Report a problem</h1>
+  <p style="color:#3E524C;font-size:14px;">This form saves to the real backend — try it, then check <a href="/dashboard.html">the dashboard</a> to see it counted.</p>
+
+  <form id="reportForm">
+    <label for="category">Category</label>
+    <select id="category" required>
+      <option value="">Select a category</option>
+    </select>
+
+    <label for="location">Location</label>
+    <input id="location" type="text" placeholder="State, city or area" required>
+
+    <label for="description">What's the problem?</label>
+    <textarea id="description" rows="4" placeholder="Describe what you're seeing" required></textarea>
+
+    <button type="submit" id="submitBtn">Submit report</button>
+    <p id="msg"></p>
+  </form>
+
+  <script>
+    const API = ''; // same origin
+
+    async function loadCategories() {
+      const res = await fetch(API + '/api/categories');
+      const data = await res.json();
+      const select = document.getElementById('category');
+      data.categories.forEach(cat => {
+        const opt = document.createElement('option');
+        opt.value = cat;
+        opt.textContent = cat;
+        select.appendChild(opt);
+      });
+    }
+    loadCategories();
+
+    document.getElementById('reportForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById('submitBtn');
+      const msg = document.getElementById('msg');
+      btn.disabled = true;
+      msg.textContent = '';
+      msg.className = '';
+
+      const payload = {
+        category: document.getElementById('category').value,
+        location: document.getElementById('location').value,
+        description: document.getElementById('description').value,
+      };
+
+      try {
+        const res = await fetch(API + '/api/reports', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Something went wrong');
+        msg.textContent = 'Report submitted — reference ' + data.report.id.slice(0, 8);
+        msg.className = 'ok';
+        e.target.reset();
+      } catch (err) {
+        msg.textContent = err.message;
+        msg.className = 'err';
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
