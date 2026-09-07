@@ -44,7 +44,7 @@ if (!process.env.SESSION_SECRET) {
 
 const CATEGORIES = [
   'Healthcare',
-  'Agriculture',
+  'Agriculture, Business & Investment',
   'Education & skills',
   'Employment access',
   'Financial inclusion',
