@@ -61,6 +61,44 @@ curl -X POST http://localhost:3000/api/reports \
 curl http://localhost:3000/api/stats
 ```
 
+## Security layers already in place
+
+- **Admin key required for moderation.** Changing a report's status
+  (`PATCH /api/reports/:id`) requires an `X-Admin-Key` header matching an
+  `ADMIN_KEY` environment variable. If `ADMIN_KEY` isn't set, this endpoint
+  is locked entirely rather than left open.
+- **Rate limiting.** Each IP can submit at most 5 reports per 15 minutes.
+- **Input sanitization.** Location and description are stripped of HTML
+  tags and capped in length before being stored.
+- **Security headers** (`X-Frame-Options`, `X-Content-Type-Options`,
+  a basic `Content-Security-Policy`, `Strict-Transport-Security`) are sent
+  on every response.
+
+### Setting your admin key
+
+**Locally / in Termux:**
+```
+ADMIN_KEY=choose-a-long-random-value node server.js
+```
+
+**On Render** (so moderation works on the live site too):
+1. Go to your service in the Render dashboard
+2. Tap the **Environment** tab (or "Environment Variables" in setup)
+3. Add a variable: Key = `ADMIN_KEY`, Value = a long random string you make up
+4. Save — Render will redeploy automatically
+
+Once set, you (or a moderator) can verify/resolve a report like this:
+```
+curl -X PATCH https://ndu-backend.onrender.com/api/reports/REPORT_ID \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Key: your-admin-key-here" \
+  -d '{"status":"verified"}'
+```
+
+There's no admin webpage for this yet — it's done via direct API calls
+for now. A proper login-protected moderator dashboard is a good next
+build once this is worth the time investment.
+
 ## Next steps (this is a starting point, not production)
 
 In priority order:
