@@ -99,8 +99,13 @@
           <div class="meta">${escapeHtml(j.company)} &middot; ${escapeHtml(j.location)}</div>
           <span class="tag">${j.type === 'remote' ? 'Remote' : 'Physical'}</span>
           ${j.category ? '<span class="tag">' + escapeHtml(j.category) + '</span>' : ''}
+          ${j.sourceUrl ? '<span class="tag" style="background:#F3E9D8;color:#8A6A1F;">Found publicly</span>' : ''}
           <p class="desc">${escapeHtml(j.description)}</p>
-          <button class="apply" onclick="openApply('${j.id}', '${escapeHtml(j.title).replace(/'/g, "\\'")}')">Apply</button>
+          ${j.sourceUrl
+            ? `<p style="font-size:12px;color:#3E524C;margin:6px 0;">This listing was found publicly — ${escapeHtml(j.company)} hasn't posted it through Ndu directly, so apply via the original source.</p>
+               <a class="apply" style="display:inline-block;text-decoration:none;" href="${escapeHtml(j.sourceUrl)}" target="_blank" rel="noopener">View original listing &nearr;</a>`
+            : `<button class="apply" onclick="openApply('${j.id}', '${escapeHtml(j.title).replace(/'/g, "\\'")}')">Apply</button>`
+          }
         </div>
       `).join('');
     }

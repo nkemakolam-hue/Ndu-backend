@@ -103,6 +103,10 @@ Two new pages: `/jobs.html` (browse and apply) and `/post-job.html` (post a role
 
 Same protections as everything else here: rate limiting on postings and applications, input sanitization, and strict checks so only the right person can view or manage applicants.
 
+### Sourced listings (jobs found publicly, not posted by the company directly)
+
+`POST /api/jobs` now accepts an optional `sourceUrl`. When set, the job card on `/jobs.html` shows a "Found publicly" tag and links out to the original listing instead of collecting applications through Ndu — because the company never agreed to receive applications this way. Use this for real job openings you find on public job boards or company career pages, so the platform has genuine content without misrepresenting any employer as having posted through Ndu themselves.
+
 ## Security layers already in place
 
 - **Admin key required for moderation.** Changing a report's status

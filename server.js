@@ -463,6 +463,11 @@ const server = http.createServer(async (req, res) => {
       const description = sanitizeText(body.description || '', MAX_DESCRIPTION_LEN);
       const type = String(body.type || '').toLowerCase();
       const category = body.category || null;
+      // Optional: for jobs found publicly elsewhere rather than posted
+      // directly by the employer through Ndu. When set, the frontend
+      // sends applicants to the original listing instead of collecting
+      // applications Ndu was never authorized to receive.
+      const sourceUrl = body.sourceUrl ? String(body.sourceUrl).trim() : null;
 
       if (!title) return sendJSON(res, 400, { error: 'Job title is required.' });
       if (!company) return sendJSON(res, 400, { error: 'Company name is required.' });
@@ -474,6 +479,9 @@ const server = http.createServer(async (req, res) => {
       if (category && !CATEGORIES.includes(category)) {
         return sendJSON(res, 400, { error: 'Invalid category.' });
       }
+      if (sourceUrl && !/^https?:\/\//i.test(sourceUrl)) {
+        return sendJSON(res, 400, { error: 'sourceUrl must start with http:// or https://' });
+      }
 
       const jobs = readJobs();
       const newJob = {
@@ -484,6 +492,7 @@ const server = http.createServer(async (req, res) => {
         description,
         type,
         category,
+        sourceUrl,
         status: 'open', // open -> closed
         postedBy: user.id,
         postedByName: user.name,
