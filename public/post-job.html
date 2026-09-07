@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ndu — Post a job</title>
+<style>
+  body{font-family:sans-serif;background:#F4F7F1;color:#14231F;max-width:480px;margin:0 auto;padding:24px;}
+  h1{font-size:22px;}
+  label{display:block;font-size:13px;color:#3E524C;margin:16px 0 6px;}
+  select,input,textarea{width:100%;padding:10px;border-radius:8px;border:1px solid #C9D6C1;font-size:15px;box-sizing:border-box;font-family:inherit;}
+  button{margin-top:20px;width:100%;padding:12px;border:none;border-radius:24px;background:#2F7D5B;color:#fff;font-size:15px;cursor:pointer;}
+  button:disabled{opacity:0.6;}
+  #msg{margin-top:14px;font-size:14px;}
+  #msg.ok{color:#2F7D5B;}
+  #msg.err{color:#A9502F;}
+  a{color:#2F7D5B;}
+  #loginNotice{background:#fff;border:1px solid #DDE6D8;border-radius:10px;padding:16px;font-size:14px;color:#3E524C;}
+</style>
+</head>
+<body>
+  <p><a href="/">&larr; Ndu</a></p>
+  <h1>Post a job</h1>
+  <p style="color:#3E524C;font-size:14px;">Hiring? List a role and reach people through Ndu.</p>
+
+  <div id="loginNotice" style="display:none;">
+    You need to <a href="/login.html">log in</a> or <a href="/signup.html">sign up</a> first to post a job.
+  </div>
+
+  <form id="jobForm">
+    <label for="company">Company / organization name</label>
+    <input id="company" type="text" required maxlength="100">
+
+    <label for="title">Job title</label>
+    <input id="title" type="text" required maxlength="100">
+
+    <label for="category">Category (optional)</label>
+    <select id="category">
+      <option value="">No specific category</option>
+    </select>
+
+    <label for="type">Work type</label>
+    <select id="type" required>
+      <option value="">Select type</option>
+      <option value="remote">Remote</option>
+      <option value="physical">Physical / on-site</option>
+    </select>
+
+    <label for="location">Location</label>
+    <input id="location" type="text" placeholder="State, city or area" required maxlength="120">
+
+    <label for="description">Job description</label>
+    <textarea id="description" rows="5" required maxlength="1000" placeholder="What's the role, and what are you looking for?"></textarea>
+
+    <button type="submit" id="submitBtn">Post job</button>
+    <p id="msg"></p>
+  </form>
+
+  <script>
+    const token = localStorage.getItem('ndu_token');
+    if (!token) {
+      document.getElementById('loginNotice').style.display = 'block';
+      document.getElementById('jobForm').style.display = 'none';
+    }
+
+    async function loadCategories() {
+      const res = await fetch('/api/categories');
+      const data = await res.json();
+      const select = document.getElementById('category');
+      data.categories.forEach(cat => {
+        const opt = document.createElement('option');
+        opt.value = cat;
+        opt.textContent = cat;
+        select.appendChild(opt);
+      });
+    }
+    loadCategories();
+
+    document.getElementById('jobForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById('submitBtn');
+      const msg = document.getElementById('msg');
+      btn.disabled = true;
+      msg.textContent = '';
+      msg.className = '';
+
+      const payload = {
+        company: document.getElementById('company').value,
+        title: document.getElementById('title').value,
+        category: document.getElementById('category').value || null,
+        type: document.getElementById('type').value,
+        location: document.getElementById('location').value,
+        description: document.getElementById('description').value,
+      };
+
+      try {
+        const res = await fetch('/api/jobs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Something went wrong');
+        msg.textContent = 'Job posted!';
+        msg.className = 'ok';
+        setTimeout(() => { window.location.href = '/jobs.html'; }, 800);
+      } catch (err) {
+        msg.textContent = err.message;
+        msg.className = 'err';
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

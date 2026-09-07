@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ndu — Jobs</title>
+<style>
+  body{font-family:sans-serif;background:#F4F7F1;color:#14231F;max-width:520px;margin:0 auto;padding:24px;}
+  h1{font-size:22px;}
+  a{color:#2F7D5B;}
+  .topbar{display:flex;justify-content:space-between;align-items:center;font-size:14px;margin-bottom:8px;}
+  .account button{width:auto;margin:0;padding:6px 12px;border-radius:16px;font-size:12px;background:#3E524C;color:#fff;border:none;}
+  select{width:100%;padding:10px;border-radius:8px;border:1px solid #C9D6C1;font-size:14px;margin:14px 0;box-sizing:border-box;font-family:inherit;background:#fff;}
+  .job{background:#fff;border:1px solid #DDE6D8;border-radius:10px;padding:14px;margin-bottom:12px;}
+  .job h3{margin:0 0 4px;font-size:16px;}
+  .job .meta{font-size:13px;color:#3E524C;margin-bottom:8px;}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:10px;background:#E4EEDF;color:#2F7D5B;margin-right:6px;}
+  .job p.desc{font-size:14px;color:#14231F;margin:8px 0;}
+  button.apply{padding:8px 16px;border:none;border-radius:16px;background:#2F7D5B;color:#fff;font-size:13px;cursor:pointer;}
+  button.apply:disabled{opacity:0.6;}
+  .empty{color:#3E524C;font-size:14px;}
+  #applyBox{display:none;background:#fff;border:1px solid #DDE6D8;border-radius:10px;padding:16px;margin-top:16px;}
+  #applyBox textarea{width:100%;padding:10px;border-radius:8px;border:1px solid #C9D6C1;font-size:14px;box-sizing:border-box;font-family:inherit;}
+  #applyBox button{margin-top:10px;padding:10px 18px;border:none;border-radius:16px;background:#2F7D5B;color:#fff;font-size:14px;}
+  #applyMsg{font-size:13px;margin-top:8px;}
+  #applyMsg.ok{color:#2F7D5B;}
+  #applyMsg.err{color:#A9502F;}
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <a href="/">&larr; Ndu</a>
+    <span class="account" id="accountBar"></span>
+  </div>
+  <h1>Jobs</h1>
+  <p style="color:#3E524C;font-size:14px;">Roles posted directly by companies and organizations — Ndu connects you to them. <a href="/post-job.html">Post a job</a> if you're hiring.</p>
+
+  <select id="categoryFilter">
+    <option value="">All categories</option>
+  </select>
+
+  <div id="jobList"></div>
+
+  <div id="applyBox">
+    <h3 id="applyJobTitle"></h3>
+    <label style="font-size:13px;color:#3E524C;">Cover note (optional)</label>
+    <textarea id="coverNote" rows="4" placeholder="Why you're a good fit..."></textarea>
+    <button id="applySubmit">Submit application</button>
+    <button onclick="closeApply()" style="background:#3E524C;">Cancel</button>
+    <p id="applyMsg"></p>
+  </div>
+
+  <script>
+    let currentJobId = null;
+
+    function renderAccountBar() {
+      const bar = document.getElementById('accountBar');
+      const userRaw = localStorage.getItem('ndu_user');
+      if (userRaw) {
+        const user = JSON.parse(userRaw);
+        bar.innerHTML = 'Signed in as ' + user.name + ' &nbsp; <button onclick="logout()">Log out</button>';
+      } else {
+        bar.innerHTML = '<a href="/login.html">Log in</a> or <a href="/signup.html">sign up</a>';
+      }
+    }
+    function logout() {
+      localStorage.removeItem('ndu_token');
+      localStorage.removeItem('ndu_user');
+      renderAccountBar();
+    }
+    renderAccountBar();
+
+    async function loadCategories() {
+      const res = await fetch('/api/categories');
+      const data = await res.json();
+      const select = document.getElementById('categoryFilter');
+      data.categories.forEach(cat => {
+        const opt = document.createElement('option');
+        opt.value = cat;
+        opt.textContent = cat;
+        select.appendChild(opt);
+      });
+    }
+
+    async function loadJobs() {
+      const category = document.getElementById('categoryFilter').value;
+      let url = '/api/jobs?status=open';
+      if (category) url += '&category=' + encodeURIComponent(category);
+      const res = await fetch(url);
+      const data = await res.json();
+      const list = document.getElementById('jobList');
+      if (!data.jobs || data.jobs.length === 0) {
+        list.innerHTML = '<p class="empty">No open jobs yet — check back soon, or <a href="/post-job.html">post one</a> if you\'re hiring.</p>';
+        return;
+      }
+      list.innerHTML = data.jobs.map(j => `
+        <div class="job">
+          <h3>${escapeHtml(j.title)}</h3>
+          <div class="meta">${escapeHtml(j.company)} &middot; ${escapeHtml(j.location)}</div>
+          <span class="tag">${j.type === 'remote' ? 'Remote' : 'Physical'}</span>
+          ${j.category ? '<span class="tag">' + escapeHtml(j.category) + '</span>' : ''}
+          <p class="desc">${escapeHtml(j.description)}</p>
+          <button class="apply" onclick="openApply('${j.id}', '${escapeHtml(j.title).replace(/'/g, "\\'")}')">Apply</button>
+        </div>
+      `).join('');
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    function openApply(jobId, title) {
+      const token = localStorage.getItem('ndu_token');
+      if (!token) { window.location.href = '/login.html'; return; }
+      currentJobId = jobId;
+      document.getElementById('applyJobTitle').textContent = 'Apply: ' + title;
+      document.getElementById('applyBox').style.display = 'block';
+      document.getElementById('applyMsg').textContent = '';
+      window.scrollTo(0, document.body.scrollHeight);
+    }
+    function closeApply() {
+      document.getElementById('applyBox').style.display = 'none';
+      currentJobId = null;
+    }
+
+    document.getElementById('applySubmit').addEventListener('click', async () => {
+      const msg = document.getElementById('applyMsg');
+      const token = localStorage.getItem('ndu_token');
+      try {
+        const res = await fetch('/api/jobs/' + currentJobId + '/apply', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+          body: JSON.stringify({ coverNote: document.getElementById('coverNote').value }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Something went wrong');
+        msg.textContent = 'Application submitted!';
+        msg.className = 'ok';
+        setTimeout(closeApply, 1200);
+      } catch (err) {
+        msg.textContent = err.message;
+        msg.className = 'err';
+      }
+    });
+
+    document.getElementById('categoryFilter').addEventListener('change', loadJobs);
+    loadCategories();
+    loadJobs();
+  </script>
+</body>
+</html>

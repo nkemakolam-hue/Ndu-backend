@@ -86,6 +86,23 @@ SESSION_SECRET=choose-a-long-random-value ADMIN_KEY=... node server.js
 variable, Key = `SESSION_SECRET`, Value = "Generated secret" (or type
 your own long random string).
 
+## Jobs board — Ndu as the middleman (new)
+
+Companies post jobs, citizens apply, and Ndu sits in between — nobody sees
+anyone else's contact details unless the employer chooses to reach out.
+
+- `POST /api/jobs` — logged-in users post a job on behalf of a company (title, company, location, type: remote/physical, category, description)
+- `GET /api/jobs` — browse jobs, filter with `?category=`, `?type=`, `?status=open`
+- `PATCH /api/jobs/:id` — the job's poster (or an admin) can close/reopen it
+- `POST /api/jobs/:id/apply` — a logged-in citizen applies with an optional cover note; one application per person per job
+- `GET /api/jobs/:id/applications` — **only the job's poster or an admin** can see who applied
+- `GET /api/applications?mine=true` — a citizen can see the status of jobs they've applied to
+- `PATCH /api/applications/:id` — the job's poster (or an admin) moves an application through submitted → reviewed → accepted/rejected
+
+Two new pages: `/jobs.html` (browse and apply) and `/post-job.html` (post a role, requires login). Both are linked from the homepage.
+
+Same protections as everything else here: rate limiting on postings and applications, input sanitization, and strict checks so only the right person can view or manage applicants.
+
 ## Security layers already in place
 
 - **Admin key required for moderation.** Changing a report's status

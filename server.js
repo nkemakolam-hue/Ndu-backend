@@ -28,6 +28,8 @@ const PORT = process.env.PORT || 3000;
 const DATA_DIR = path.join(__dirname, 'data');
 const REPORTS_FILE = path.join(DATA_DIR, 'reports.json');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
+const JOBS_FILE = path.join(DATA_DIR, 'jobs.json');
+const APPLICATIONS_FILE = path.join(DATA_DIR, 'applications.json');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
 // Admin key for moderation — set as a real env var, never hard-coded.
@@ -56,6 +58,10 @@ const CATEGORIES = [
 const MAX_LOCATION_LEN = 120;
 const MAX_DESCRIPTION_LEN = 1000;
 const MAX_NAME_LEN = 80;
+const MAX_TITLE_LEN = 100;
+const MAX_COMPANY_LEN = 100;
+const MAX_COVER_NOTE_LEN = 1500;
+const JOB_TYPES = ['remote', 'physical'];
 const MIN_PASSWORD_LEN = 8;
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -78,6 +84,10 @@ const readReports = () => readJSON(REPORTS_FILE);
 const writeReports = (r) => writeJSON(REPORTS_FILE, r);
 const readUsers = () => readJSON(USERS_FILE);
 const writeUsers = (u) => writeJSON(USERS_FILE, u);
+const readJobs = () => readJSON(JOBS_FILE);
+const writeJobs = (j) => writeJSON(JOBS_FILE, j);
+const readApplications = () => readJSON(APPLICATIONS_FILE);
+const writeApplications = (a) => writeJSON(APPLICATIONS_FILE, a);
 
 // ---------- security helpers ----------
 
@@ -430,6 +440,193 @@ const server = http.createServer(async (req, res) => {
       report.updatedAt = new Date().toISOString();
       writeReports(reports);
       return sendJSON(res, 200, { report });
+    }
+
+    // ---------- JOBS (Ndu as middleman between companies and applicants) ----------
+
+    // POST /api/jobs — a logged-in user posts a job on behalf of a company.
+    // Requires login so postings are always traceable to a real account,
+    // not anonymous.
+    if (pathname === '/api/jobs' && req.method === 'POST') {
+      const user = getCurrentUser(req);
+      if (!user) return sendJSON(res, 401, { error: 'Log in to post a job.' });
+
+      const ip = getClientIp(req);
+      if (!checkRateLimit('post-job', ip, 10)) {
+        return sendJSON(res, 429, { error: 'Too many job postings submitted. Please try again later.' });
+      }
+
+      const body = await readBody(req);
+      const title = sanitizeText(body.title || '', MAX_TITLE_LEN);
+      const company = sanitizeText(body.company || '', MAX_COMPANY_LEN);
+      const location = sanitizeText(body.location || '', MAX_LOCATION_LEN);
+      const description = sanitizeText(body.description || '', MAX_DESCRIPTION_LEN);
+      const type = String(body.type || '').toLowerCase();
+      const category = body.category || null;
+
+      if (!title) return sendJSON(res, 400, { error: 'Job title is required.' });
+      if (!company) return sendJSON(res, 400, { error: 'Company name is required.' });
+      if (!location) return sendJSON(res, 400, { error: 'Location is required.' });
+      if (!description) return sendJSON(res, 400, { error: 'Description is required.' });
+      if (!JOB_TYPES.includes(type)) {
+        return sendJSON(res, 400, { error: `type must be one of ${JOB_TYPES.join(', ')}` });
+      }
+      if (category && !CATEGORIES.includes(category)) {
+        return sendJSON(res, 400, { error: 'Invalid category.' });
+      }
+
+      const jobs = readJobs();
+      const newJob = {
+        id: crypto.randomUUID(),
+        title,
+        company,
+        location,
+        description,
+        type,
+        category,
+        status: 'open', // open -> closed
+        postedBy: user.id,
+        postedByName: user.name,
+        createdAt: new Date().toISOString(),
+      };
+      jobs.push(newJob);
+      writeJobs(jobs);
+      return sendJSON(res, 201, { job: newJob });
+    }
+
+    // GET /api/jobs?category=&type=&status=&mine=true
+    if (pathname === '/api/jobs' && req.method === 'GET') {
+      let jobs = readJobs();
+      const { category, type, status, mine } = parsed.query;
+      if (category) jobs = jobs.filter((j) => j.category === category);
+      if (type) jobs = jobs.filter((j) => j.type === type);
+      if (status) jobs = jobs.filter((j) => j.status === status);
+      if (mine === 'true') {
+        const user = getCurrentUser(req);
+        if (!user) return sendJSON(res, 401, { error: 'Log in to view your posted jobs.' });
+        jobs = jobs.filter((j) => j.postedBy === user.id);
+      }
+      return sendJSON(res, 200, { jobs });
+    }
+
+    // PATCH /api/jobs/:id  { status: 'open'|'closed' } — only the poster or an admin
+    const jobPatchMatch = pathname.match(/^\/api\/jobs\/([a-f0-9-]+)$/i);
+    if (jobPatchMatch && req.method === 'PATCH') {
+      const user = getCurrentUser(req);
+      if (!user) return sendJSON(res, 401, { error: 'Log in required.' });
+
+      const jobs = readJobs();
+      const job = jobs.find((j) => j.id === jobPatchMatch[1]);
+      if (!job) return sendJSON(res, 404, { error: 'Job not found.' });
+      if (job.postedBy !== user.id && user.role !== 'admin') {
+        return sendJSON(res, 403, { error: 'Only the job poster or an admin can update this listing.' });
+      }
+
+      const body = await readBody(req);
+      if (!['open', 'closed'].includes(body.status)) {
+        return sendJSON(res, 400, { error: 'status must be open or closed.' });
+      }
+      job.status = body.status;
+      job.updatedAt = new Date().toISOString();
+      writeJobs(jobs);
+      return sendJSON(res, 200, { job });
+    }
+
+    // POST /api/jobs/:id/apply  { coverNote } — requires login
+    const applyMatch = pathname.match(/^\/api\/jobs\/([a-f0-9-]+)\/apply$/i);
+    if (applyMatch && req.method === 'POST') {
+      const user = getCurrentUser(req);
+      if (!user) return sendJSON(res, 401, { error: 'Log in to apply for this job.' });
+
+      const ip = getClientIp(req);
+      if (!checkRateLimit('apply', ip, 15)) {
+        return sendJSON(res, 429, { error: 'Too many applications submitted. Please try again later.' });
+      }
+
+      const jobs = readJobs();
+      const job = jobs.find((j) => j.id === applyMatch[1]);
+      if (!job) return sendJSON(res, 404, { error: 'Job not found.' });
+      if (job.status !== 'open') return sendJSON(res, 400, { error: 'This job is no longer accepting applications.' });
+
+      const applications = readApplications();
+      const alreadyApplied = applications.some((a) => a.jobId === job.id && a.applicantId === user.id);
+      if (alreadyApplied) return sendJSON(res, 409, { error: 'You already applied to this job.' });
+
+      const body = await readBody(req);
+      const newApplication = {
+        id: crypto.randomUUID(),
+        jobId: job.id,
+        applicantId: user.id,
+        applicantName: user.name,
+        applicantEmail: user.email,
+        coverNote: sanitizeText(body.coverNote || '', MAX_COVER_NOTE_LEN),
+        status: 'submitted', // submitted -> reviewed -> accepted/rejected
+        createdAt: new Date().toISOString(),
+      };
+      applications.push(newApplication);
+      writeApplications(applications);
+      return sendJSON(res, 201, { application: newApplication });
+    }
+
+    // GET /api/jobs/:id/applications — only the job poster or an admin can view applicants
+    const jobAppsMatch = pathname.match(/^\/api\/jobs\/([a-f0-9-]+)\/applications$/i);
+    if (jobAppsMatch && req.method === 'GET') {
+      const user = getCurrentUser(req);
+      if (!user) return sendJSON(res, 401, { error: 'Log in required.' });
+
+      const jobs = readJobs();
+      const job = jobs.find((j) => j.id === jobAppsMatch[1]);
+      if (!job) return sendJSON(res, 404, { error: 'Job not found.' });
+      if (job.postedBy !== user.id && user.role !== 'admin') {
+        return sendJSON(res, 403, { error: 'Only the job poster or an admin can view applicants.' });
+      }
+
+      const applications = readApplications().filter((a) => a.jobId === job.id);
+      return sendJSON(res, 200, { applications });
+    }
+
+    // GET /api/applications?mine=true — the logged-in user's own applications
+    if (pathname === '/api/applications' && req.method === 'GET') {
+      const user = getCurrentUser(req);
+      if (!user) return sendJSON(res, 401, { error: 'Log in required.' });
+      if (parsed.query.mine !== 'true') {
+        return sendJSON(res, 400, { error: 'Add ?mine=true to view your own applications.' });
+      }
+      const jobs = readJobs();
+      const applications = readApplications()
+        .filter((a) => a.applicantId === user.id)
+        .map((a) => {
+          const job = jobs.find((j) => j.id === a.jobId);
+          return { ...a, jobTitle: job ? job.title : '(job removed)', jobCompany: job ? job.company : '' };
+        });
+      return sendJSON(res, 200, { applications });
+    }
+
+    // PATCH /api/applications/:id  { status } — only the related job's poster or an admin
+    const appPatchMatch = pathname.match(/^\/api\/applications\/([a-f0-9-]+)$/i);
+    if (appPatchMatch && req.method === 'PATCH') {
+      const user = getCurrentUser(req);
+      if (!user) return sendJSON(res, 401, { error: 'Log in required.' });
+
+      const applications = readApplications();
+      const application = applications.find((a) => a.id === appPatchMatch[1]);
+      if (!application) return sendJSON(res, 404, { error: 'Application not found.' });
+
+      const jobs = readJobs();
+      const job = jobs.find((j) => j.id === application.jobId);
+      if (!job || (job.postedBy !== user.id && user.role !== 'admin')) {
+        return sendJSON(res, 403, { error: 'Only the job poster or an admin can update this application.' });
+      }
+
+      const body = await readBody(req);
+      const validStatuses = ['submitted', 'reviewed', 'accepted', 'rejected'];
+      if (!validStatuses.includes(body.status)) {
+        return sendJSON(res, 400, { error: `status must be one of ${validStatuses.join(', ')}` });
+      }
+      application.status = body.status;
+      application.updatedAt = new Date().toISOString();
+      writeApplications(applications);
+      return sendJSON(res, 200, { application });
     }
 
     if (pathname === '/api/stats' && req.method === 'GET') {
