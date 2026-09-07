@@ -61,6 +61,31 @@ curl -X POST http://localhost:3000/api/reports \
 curl http://localhost:3000/api/stats
 ```
 
+## Accounts & login (new)
+
+- `POST /api/auth/signup` — `{ name, email, password }` → creates an account, returns a session token
+- `POST /api/auth/login` — `{ email, password }` → returns a session token
+- `GET /api/auth/me` — returns the logged-in user (send `Authorization: Bearer <token>`)
+- **The very first person to sign up becomes an admin automatically.** Everyone after that signs up as a regular citizen. To promote someone else to admin later, edit their `role` field directly in `data/users.json` (there's no admin UI for this yet).
+- Logged-in users who submit a report get it tagged with their account (`reportedBy`) — anonymous reporting still works too, nothing is required.
+- Passwords are hashed with scrypt + a random salt per user — never stored in plain text.
+- Sessions are signed tokens (like a lightweight JWT), not stored server-side, so they survive restarts as long as `SESSION_SECRET` is set (see below).
+
+### Setting your session secret
+
+Same idea as `ADMIN_KEY`. Without it, a random one is generated every time
+the server starts, which means **everyone gets logged out on every
+restart or redeploy** — safe by default, but annoying. Set a real one:
+
+**Locally / Termux:**
+```
+SESSION_SECRET=choose-a-long-random-value ADMIN_KEY=... node server.js
+```
+
+**On Render:** same Environment tab as `ADMIN_KEY` — add a second
+variable, Key = `SESSION_SECRET`, Value = "Generated secret" (or type
+your own long random string).
+
 ## Security layers already in place
 
 - **Admin key required for moderation.** Changing a report's status

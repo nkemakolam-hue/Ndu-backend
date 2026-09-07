@@ -15,10 +15,16 @@
   #msg.ok{color:#2F7D5B;}
   #msg.err{color:#A9502F;}
   a{color:#2F7D5B;}
+  .topbar{display:flex;justify-content:space-between;align-items:center;font-size:14px;margin-bottom:8px;}
+  .account{font-size:13px;color:#3E524C;}
+  .account button{width:auto;margin:0;padding:6px 12px;border-radius:16px;font-size:12px;background:#3E524C;}
 </style>
 </head>
 <body>
-  <p><a href="/">&larr; Ndu</a></p>
+  <div class="topbar">
+    <a href="/">&larr; Ndu</a>
+    <span class="account" id="accountBar"></span>
+  </div>
   <h1>Report a problem</h1>
   <p style="color:#3E524C;font-size:14px;">This form saves to the real backend — try it, then check <a href="/dashboard.html">the dashboard</a> to see it counted.</p>
 
@@ -39,10 +45,25 @@
   </form>
 
   <script>
-    const API = ''; // same origin
+    function renderAccountBar() {
+      const bar = document.getElementById('accountBar');
+      const userRaw = localStorage.getItem('ndu_user');
+      if (userRaw) {
+        const user = JSON.parse(userRaw);
+        bar.innerHTML = 'Signed in as ' + user.name + ' &nbsp; <button onclick="logout()">Log out</button>';
+      } else {
+        bar.innerHTML = '<a href="/login.html">Log in</a> or <a href="/signup.html">sign up</a>';
+      }
+    }
+    function logout() {
+      localStorage.removeItem('ndu_token');
+      localStorage.removeItem('ndu_user');
+      renderAccountBar();
+    }
+    renderAccountBar();
 
     async function loadCategories() {
-      const res = await fetch(API + '/api/categories');
+      const res = await fetch('/api/categories');
       const data = await res.json();
       const select = document.getElementById('category');
       data.categories.forEach(cat => {
@@ -68,10 +89,14 @@
         description: document.getElementById('description').value,
       };
 
+      const headers = { 'Content-Type': 'application/json' };
+      const token = localStorage.getItem('ndu_token');
+      if (token) headers['Authorization'] = 'Bearer ' + token;
+
       try {
-        const res = await fetch(API + '/api/reports', {
+        const res = await fetch('/api/reports', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           body: JSON.stringify(payload),
         });
         const data = await res.json();

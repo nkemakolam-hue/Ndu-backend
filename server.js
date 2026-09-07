@@ -2,18 +2,21 @@
 //
 // Built with only Node's built-in modules (no npm install required) so it
 // runs anywhere, including Termux with no internet access to fetch
-// packages. Data is stored in a JSON file — fine for a prototype/demo, but
+// packages. Data is stored in JSON files — fine for a prototype/demo, but
 // must be swapped for a real database before this handles real public
 // data at scale (see README.md "Next steps").
 //
 // SECURITY LAYERS IN THIS FILE:
-//   1. Admin key required to change a report's status (PATCH)
-//   2. Rate limiting on report submissions (per IP)
-//   3. Input length limits + stripped HTML tags (prevents stored XSS)
-//   4. Security response headers on every request
-//   5. Constant-time admin key comparison (prevents timing attacks)
-//   6. Request body size cap (already present, kept)
-//   7. Path traversal protection on static files (already present, kept)
+//   1. Passwords hashed with scrypt + random salt (never stored plain)
+//   2. Signed session tokens (HMAC-SHA256), not guessable or forgeable
+//   3. Admin key OR admin-role login required to change a report's status
+//   4. Rate limiting on report submissions AND on login/signup attempts
+//   5. Input length limits + stripped HTML tags (prevents stored XSS)
+//   6. Security response headers on every request
+//   7. Constant-time comparisons for keys/signatures (prevents timing attacks)
+//   8. Generic login error messages (prevents leaking which emails exist)
+//   9. Request body size cap
+//  10. Path traversal protection on static files
 
 const http = require('http');
 const fs = require('fs');
@@ -22,14 +25,22 @@ const crypto = require('crypto');
 const url = require('url');
 
 const PORT = process.env.PORT || 3000;
-const DATA_FILE = path.join(__dirname, 'data', 'reports.json');
+const DATA_DIR = path.join(__dirname, 'data');
+const REPORTS_FILE = path.join(DATA_DIR, 'reports.json');
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
-// Set this as a real environment variable in Render (and locally via
-// `export ADMIN_KEY=...` before running) — never hard-code a real secret
-// here. If it's not set, moderation actions are disabled entirely rather
-// than left open, which is the safer default.
+// Admin key for moderation — set as a real env var, never hard-coded.
 const ADMIN_KEY = process.env.ADMIN_KEY || null;
+
+// Secret used to sign session tokens. If not set, a random one is
+// generated at startup — sessions will all log out on every restart/
+// redeploy, which is safe-by-default but inconvenient. Set a real
+// SESSION_SECRET env var (like ADMIN_KEY) for persistent logins.
+const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+if (!process.env.SESSION_SECRET) {
+  console.log('NOTE: SESSION_SECRET is not set — a temporary one was generated, so all logins will be invalidated on restart. Set SESSION_SECRET in your environment for persistent sessions.');
+}
 
 const CATEGORIES = [
   'Healthcare',
@@ -44,28 +55,32 @@ const CATEGORIES = [
 
 const MAX_LOCATION_LEN = 120;
 const MAX_DESCRIPTION_LEN = 1000;
+const MAX_NAME_LEN = 80;
+const MIN_PASSWORD_LEN = 8;
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // ---------- tiny JSON-file "database" ----------
 
-function readReports() {
+function readJSON(file) {
   try {
-    const raw = fs.readFileSync(DATA_FILE, 'utf8');
-    return JSON.parse(raw);
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch (e) {
     return [];
   }
 }
 
-function writeReports(reports) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(reports, null, 2));
+function writeJSON(file, data) {
+  fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
+
+const readReports = () => readJSON(REPORTS_FILE);
+const writeReports = (r) => writeJSON(REPORTS_FILE, r);
+const readUsers = () => readJSON(USERS_FILE);
+const writeUsers = (u) => writeJSON(USERS_FILE, u);
 
 // ---------- security helpers ----------
 
-// Strip any HTML tags from user input before storing. This is a
-// belt-and-suspenders measure: the current frontend pages already use
-// textContent (safe), but this protects any future page that might render
-// report text as HTML.
 function stripTags(str) {
   return String(str).replace(/<[^>]*>/g, '');
 }
@@ -78,8 +93,6 @@ function sanitizeText(str, maxLen) {
   return clamp(stripTags(str), maxLen).trim();
 }
 
-// Constant-time comparison so an attacker can't guess the admin key one
-// character at a time by measuring response speed.
 function safeEqual(a, b) {
   const bufA = Buffer.from(String(a));
   const bufB = Buffer.from(String(b));
@@ -87,37 +100,107 @@ function safeEqual(a, b) {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
-function isAuthorized(req) {
-  if (!ADMIN_KEY) return false; // no key configured = moderation stays locked
-  const provided = req.headers['x-admin-key'];
-  if (!provided) return false;
-  return safeEqual(provided, ADMIN_KEY);
+// ---------- password hashing (scrypt, built into Node — no bcrypt needed) ----------
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  return `${salt}:${hash}`;
+}
+
+function verifyPassword(password, stored) {
+  const [salt, hash] = stored.split(':');
+  const attempt = crypto.scryptSync(password, salt, 64).toString('hex');
+  return safeEqual(attempt, hash);
+}
+
+// ---------- session tokens (self-contained, HMAC-signed — no server-side session store needed) ----------
+
+function base64url(input) {
+  return Buffer.from(input).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function base64urlDecode(input) {
+  input = input.replace(/-/g, '+').replace(/_/g, '/');
+  while (input.length % 4) input += '=';
+  return Buffer.from(input, 'base64').toString('utf8');
+}
+
+function createToken(payload) {
+  const body = { ...payload, exp: Date.now() + SESSION_TTL_MS };
+  const encoded = base64url(JSON.stringify(body));
+  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(encoded).digest('hex');
+  return `${encoded}.${sig}`;
+}
+
+function verifyToken(token) {
+  if (!token || typeof token !== 'string' || !token.includes('.')) return null;
+  const [encoded, sig] = token.split('.');
+  const expectedSig = crypto.createHmac('sha256', SESSION_SECRET).update(encoded).digest('hex');
+  if (!sig || !safeEqual(sig, expectedSig)) return null;
+  try {
+    const payload = JSON.parse(base64urlDecode(encoded));
+    if (!payload.exp || Date.now() > payload.exp) return null;
+    return payload;
+  } catch (e) {
+    return null;
+  }
+}
+
+function getBearerToken(req) {
+  const header = req.headers['authorization'];
+  if (!header || !header.startsWith('Bearer ')) return null;
+  return header.slice('Bearer '.length).trim();
+}
+
+function getCurrentUser(req) {
+  const token = getBearerToken(req);
+  if (!token) return null;
+  const payload = verifyToken(token);
+  if (!payload) return null;
+  const users = readUsers();
+  const user = users.find((u) => u.id === payload.sub);
+  return user || null;
+}
+
+function isAdminRequest(req) {
+  // Two independent ways to be authorized as admin: the shared ADMIN_KEY
+  // header (for scripts/curl), or a logged-in user with role 'admin'.
+  if (ADMIN_KEY) {
+    const provided = req.headers['x-admin-key'];
+    if (provided && safeEqual(provided, ADMIN_KEY)) return true;
+  }
+  const user = getCurrentUser(req);
+  return !!(user && user.role === 'admin');
+}
+
+function publicUser(user) {
+  // Never send passwordHash to the client.
+  const { passwordHash, ...safe } = user;
+  return safe;
 }
 
 // ---------- simple in-memory rate limiter ----------
-// Per-IP limit on report submissions. Resets on redeploy (fine for a
-// prototype). Not a substitute for a real rate-limiting layer (e.g. a CDN
-// or reverse proxy) once this handles real traffic — see README.
+// Resets on redeploy (fine for a prototype). Not a substitute for a real
+// rate-limiting layer once this handles real traffic — see README.
 
 const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
-const RATE_LIMIT_MAX = 5; // max reports per IP per window
-const rateLimitMap = new Map(); // ip -> { count, resetAt }
+const rateLimitBuckets = new Map(); // "bucket:ip" -> { count, resetAt }
 
-function checkRateLimit(ip) {
+function checkRateLimit(bucket, ip, max) {
+  const key = `${bucket}:${ip}`;
   const now = Date.now();
-  const entry = rateLimitMap.get(ip);
+  const entry = rateLimitBuckets.get(key);
   if (!entry || now > entry.resetAt) {
-    rateLimitMap.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    rateLimitBuckets.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
     return true;
   }
-  if (entry.count >= RATE_LIMIT_MAX) return false;
+  if (entry.count >= max) return false;
   entry.count++;
   return true;
 }
 
 function getClientIp(req) {
-  // Render (and most hosts) sit behind a proxy — the real client IP shows
-  // up in this header. Falls back to the raw socket address locally.
   const forwarded = req.headers['x-forwarded-for'];
   if (forwarded) return forwarded.split(',')[0].trim();
   return req.socket.remoteAddress || 'unknown';
@@ -174,7 +257,6 @@ const MIME = {
 function serveStatic(req, res, pathname) {
   let filePath = pathname === '/' ? '/index.html' : pathname;
   filePath = path.join(PUBLIC_DIR, filePath);
-  // prevent path traversal outside public/
   if (!filePath.startsWith(PUBLIC_DIR)) {
     res.writeHead(403, securityHeaders());
     return res.end('Forbidden');
@@ -196,35 +278,107 @@ const server = http.createServer(async (req, res) => {
   const parsed = url.parse(req.url, true);
   const pathname = parsed.pathname;
 
-  // CORS preflight
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       'Access-Control-Allow-Methods': 'GET,POST,PATCH,OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, X-Admin-Key',
+      'Access-Control-Allow-Headers': 'Content-Type, X-Admin-Key, Authorization',
       ...securityHeaders(),
     });
     return res.end();
   }
 
   try {
-    // GET /api/categories
+    // ---------- AUTH ----------
+
+    // POST /api/auth/signup  { name, email, password }
+    if (pathname === '/api/auth/signup' && req.method === 'POST') {
+      const ip = getClientIp(req);
+      if (!checkRateLimit('signup', ip, 10)) {
+        return sendJSON(res, 429, { error: 'Too many signup attempts. Please try again later.' });
+      }
+
+      const body = await readBody(req);
+      const name = sanitizeText(body.name || '', MAX_NAME_LEN);
+      const email = String(body.email || '').trim().toLowerCase();
+      const password = String(body.password || '');
+
+      if (!name) return sendJSON(res, 400, { error: 'Name is required.' });
+      if (!EMAIL_RE.test(email)) return sendJSON(res, 400, { error: 'A valid email is required.' });
+      if (password.length < MIN_PASSWORD_LEN) {
+        return sendJSON(res, 400, { error: `Password must be at least ${MIN_PASSWORD_LEN} characters.` });
+      }
+
+      const users = readUsers();
+      if (users.some((u) => u.email === email)) {
+        return sendJSON(res, 409, { error: 'An account with that email already exists.' });
+      }
+
+      const newUser = {
+        id: crypto.randomUUID(),
+        name,
+        email,
+        passwordHash: hashPassword(password),
+        role: users.length === 0 ? 'admin' : 'citizen', // first-ever signup becomes admin
+        createdAt: new Date().toISOString(),
+      };
+      users.push(newUser);
+      writeUsers(users);
+
+      const token = createToken({ sub: newUser.id });
+      return sendJSON(res, 201, { token, user: publicUser(newUser) });
+    }
+
+    // POST /api/auth/login  { email, password }
+    if (pathname === '/api/auth/login' && req.method === 'POST') {
+      const ip = getClientIp(req);
+      if (!checkRateLimit('login', ip, 10)) {
+        return sendJSON(res, 429, { error: 'Too many login attempts. Please try again later.' });
+      }
+
+      const body = await readBody(req);
+      const email = String(body.email || '').trim().toLowerCase();
+      const password = String(body.password || '');
+
+      const users = readUsers();
+      const user = users.find((u) => u.email === email);
+      const GENERIC_ERROR = { error: 'Invalid email or password.' };
+
+      if (!user) return sendJSON(res, 401, GENERIC_ERROR); // generic on purpose — don't reveal which emails exist
+      if (!verifyPassword(password, user.passwordHash)) return sendJSON(res, 401, GENERIC_ERROR);
+
+      const token = createToken({ sub: user.id });
+      return sendJSON(res, 200, { token, user: publicUser(user) });
+    }
+
+    // GET /api/auth/me  (Authorization: Bearer <token>)
+    if (pathname === '/api/auth/me' && req.method === 'GET') {
+      const user = getCurrentUser(req);
+      if (!user) return sendJSON(res, 401, { error: 'Not logged in.' });
+      return sendJSON(res, 200, { user: publicUser(user) });
+    }
+
+    // ---------- REPORTS ----------
+
     if (pathname === '/api/categories' && req.method === 'GET') {
       return sendJSON(res, 200, { categories: CATEGORIES });
     }
 
-    // GET /api/reports?category=&status=
     if (pathname === '/api/reports' && req.method === 'GET') {
       let reports = readReports();
-      const { category, status } = parsed.query;
+      const { category, status, mine } = parsed.query;
       if (category) reports = reports.filter((r) => r.category === category);
       if (status) reports = reports.filter((r) => r.status === status);
+      if (mine === 'true') {
+        const user = getCurrentUser(req);
+        if (!user) return sendJSON(res, 401, { error: 'Log in to view your own reports.' });
+        reports = reports.filter((r) => r.reportedBy === user.id);
+      }
       return sendJSON(res, 200, { reports });
     }
 
-    // POST /api/reports  { category, location, description }
     if (pathname === '/api/reports' && req.method === 'POST') {
       const ip = getClientIp(req);
-      if (!checkRateLimit(ip)) {
+      if (!checkRateLimit('report', ip, 5)) {
         return sendJSON(res, 429, { error: 'Too many reports submitted. Please try again later.' });
       }
 
@@ -241,13 +395,15 @@ const server = http.createServer(async (req, res) => {
         return sendJSON(res, 400, { error: 'Description is required.' });
       }
 
+      const user = getCurrentUser(req); // optional — anonymous reporting is still allowed
       const reports = readReports();
       const newReport = {
         id: crypto.randomUUID(),
         category,
         location: sanitizeText(location, MAX_LOCATION_LEN),
         description: sanitizeText(description, MAX_DESCRIPTION_LEN),
-        status: 'unverified', // unverified -> verified -> resolved
+        status: 'unverified',
+        reportedBy: user ? user.id : null,
         createdAt: new Date().toISOString(),
       };
       reports.push(newReport);
@@ -255,11 +411,10 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 201, { report: newReport });
     }
 
-    // PATCH /api/reports/:id  { status }  — requires X-Admin-Key header
     const patchMatch = pathname.match(/^\/api\/reports\/([a-f0-9-]+)$/i);
     if (patchMatch && req.method === 'PATCH') {
-      if (!isAuthorized(req)) {
-        return sendJSON(res, 401, { error: 'Unauthorized. A valid X-Admin-Key header is required.' });
+      if (!isAdminRequest(req)) {
+        return sendJSON(res, 401, { error: 'Unauthorized. Admin key or admin login required.' });
       }
 
       const id = patchMatch[1];
@@ -277,7 +432,6 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 200, { report });
     }
 
-    // GET /api/stats  — counts by category and status, for the dashboard
     if (pathname === '/api/stats' && req.method === 'GET') {
       const reports = readReports();
       const byCategory = {};
@@ -290,7 +444,6 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 200, { total: reports.length, byCategory, byStatus });
     }
 
-    // everything else -> try serving a static file from /public
     if (req.method === 'GET') {
       return serveStatic(req, res, pathname);
     }
@@ -303,8 +456,8 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Ndu backend running at http://localhost:${PORT}`);
-  console.log(`Try: http://localhost:${PORT}/report.html`);
+  console.log(`Try: http://localhost:${PORT}/signup.html`);
   if (!ADMIN_KEY) {
-    console.log('NOTE: ADMIN_KEY is not set — status-change (moderation) endpoint is locked until it is.');
+    console.log('NOTE: ADMIN_KEY is not set — the shared-key path for moderation is disabled (admin-role login still works).');
   }
 });

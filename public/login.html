@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ndu — Log in</title>
+<style>
+  body{font-family:sans-serif;background:#F4F7F1;color:#14231F;max-width:420px;margin:0 auto;padding:24px;}
+  h1{font-size:22px;}
+  label{display:block;font-size:13px;color:#3E524C;margin:16px 0 6px;}
+  input{width:100%;padding:10px;border-radius:8px;border:1px solid #C9D6C1;font-size:15px;box-sizing:border-box;font-family:inherit;}
+  button{margin-top:20px;width:100%;padding:12px;border:none;border-radius:24px;background:#2F7D5B;color:#fff;font-size:15px;cursor:pointer;}
+  button:disabled{opacity:0.6;}
+  #msg{margin-top:14px;font-size:14px;}
+  #msg.ok{color:#2F7D5B;}
+  #msg.err{color:#A9502F;}
+  a{color:#2F7D5B;}
+  .switch{margin-top:18px;font-size:14px;color:#3E524C;}
+</style>
+</head>
+<body>
+  <p><a href="/">&larr; Ndu</a></p>
+  <h1>Log in</h1>
+
+  <form id="loginForm">
+    <label for="email">Email</label>
+    <input id="email" type="email" required>
+
+    <label for="password">Password</label>
+    <input id="password" type="password" required>
+
+    <button type="submit" id="submitBtn">Log in</button>
+    <p id="msg"></p>
+  </form>
+
+  <p class="switch">Don't have an account? <a href="/signup.html">Sign up</a></p>
+
+  <script>
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById('submitBtn');
+      const msg = document.getElementById('msg');
+      btn.disabled = true;
+      msg.textContent = '';
+      msg.className = '';
+
+      const payload = {
+        email: document.getElementById('email').value,
+        password: document.getElementById('password').value,
+      };
+
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Something went wrong');
+
+        localStorage.setItem('ndu_token', data.token);
+        localStorage.setItem('ndu_user', JSON.stringify(data.user));
+        msg.textContent = 'Logged in — redirecting...';
+        msg.className = 'ok';
+        setTimeout(() => { window.location.href = '/report.html'; }, 600);
+      } catch (err) {
+        msg.textContent = err.message;
+        msg.className = 'err';
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
